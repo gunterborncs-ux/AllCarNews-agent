@@ -29,7 +29,7 @@ from config import (
 from dedup import deduplicate
 from rss_sources import (
     RSS_FEEDS,
-    BRAND_MARKERS,
+    CAR_BRANDS,
     PHONE_KEYWORDS,
     STOP_WORDS,
 )
