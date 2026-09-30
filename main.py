@@ -133,11 +133,11 @@ def is_relevant(article: dict) -> bool:
         return False
 
     # 2. Маркеры брендов (Samsung, Xiaomi, ...)
-    if any(brand in text for brand in BRAND_MARKERS):
+    if any(brand in text for brand in CAR_BRANDS):
         return True
 
     # 3. Общие ключевые слова про смартфоны / утечки / прототипы
-    if any(kw in text for kw in PHONE_KEYWORDS):
+    if any(kw in text for kw in AUTO_KEYWORDS):
         return True
 
     return False
