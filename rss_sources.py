@@ -1,89 +1,76 @@
+# rss_sources.py
 """
-Источники RSS и правила фильтрации для узкой тематики:
-только смартфоны, ожидаемые новинки и прототипы.
+Источники RSS и правила фильтрации для тематики:
+только автомобили, концепткары, электромобили.
 """
 
 RSS_FEEDS = [
     # --- Англоязычные ---
-    "https://www.gsmarena.com/rss-news-reviews.php",
-    "https://www.theverge.com/rss/index.xml",
-    "https://techcrunch.com/category/mobile/feed/",
-    "https://www.androidauthority.com/feed/",
-    "https://9to5google.com/feed/",
-    "https://www.phonearena.com/news/rss",
-    "https://www.gizmochina.com/feed/",
-    "https://www.xda-developers.com/feed/",
+    "https://insideevs.com/rss/category/artificial-intelligence/", # InsideEVs (AI & EV)
+    "https://www.carscoops.com/feed/",                             # Carscoops
+    "https://www.motor1.com/rss/",                                 # Motor1
+    "https://jalopnik.com/rss",                                    # Jalopnik
+    "https://www.caranddriver.com/rss/all.xml",                    # Car and Driver
+    "https://www.autoblog.com/rss.xml",                            # Autoblog
+    "https://electrek.co/feed/",                                   # Electrek (EV)
     # --- Русскоязычные ---
-    "https://www.ixbt.com/export/news.rss",
-    "https://mobile-review.com/feed/",
-    "https://4pda.to/feed/",
+    "https://motor.ru/exports/rss",                                # Motor.ru
+    "https://www.drive.ru/rss",                                    # Drive.ru
+    "https://www.autonews.ru/rss",                                 # Autonews.ru (РБК)
+    "https://www.kolesa.ru/rss",                                   # Kolesa.ru
 ]
 
 # ---------------------------------------------------------------------------
 # Правило фильтрации:
-#   статья проходит, если содержит >= 1 маркер из BRAND_MARKERS
-#   ИЛИ >= 1 маркер из PHONE_KEYWORDS,
+#   статья проходит, если содержит >= 1 маркер из CAR_BRANDS
+#   ИЛИ >= 1 маркер из AUTO_KEYWORDS,
 #   И НЕ содержит ни одного стоп-слова из STOP_WORDS.
 # ---------------------------------------------------------------------------
 
-# Марки производителей смартфонов (в нижнем регистре)
-BRAND_MARKERS = [
-    # Крупные бренды
-    "samsung", "galaxy", "iphone", "apple", "google pixel", "pixel",
-    "xiaomi", "redmi", "poco", "huawei", "honor", "oppo", "vivo",
-    "oneplus", "realme", "motorola", "moto", "nothing phone",
-    "asus zenfone", "rog phone", "sony xperia", "xperia",
-    # Китайские и нишевые
-    "infinix", "tecno", "itel", "lava", "micromax", "fairphone",
-    "cubot", "ulefone", "doogee", "blackview", "umidigi",
-    # Игровые и складные
-    "fold", "flip", "razr", "find n", "mix fold",
+# Марки автомобилей (в нижнем регистре)
+CAR_BRANDS = [
+    "tesla", "toyota", "volkswagen", "vw", "ford", "honda", "bmw", "mercedes",
+    "audi", "porsche", "lamborghini", "ferrari", "mclaren", "aston martin",
+    "bentley", "rolls-royce", "cadillac", "chevrolet", "corvette", "dodge",
+    "jeep", "ram", "chrysler", "buick", "gmc", "lincoln", "hyundai", "kia",
+    "genesis", "nissan", "infiniti", "mazda", "subaru", "mitsubishi", "lexus",
+    "volvo", "polestar", "jaguar", "land rover", "mini", "byd", "nio", "xpeng",
+    "li auto", "geely", "chery", "haval", "changan", "great wall", "zeekr",
+    "lucid", "rivian", "fisker", "bugatti", "koenigsegg", "pagani", "lotus",
+    "alpine", "maserati", "peugeot", "citroen", "renault", "dacia", "skoda",
+    "seat", "cupra", "opel", "vauxhall", "fiat", "alfa romeo", "lancia",
 ]
 
-# Общие слова про смартфоны
-PHONE_KEYWORDS = [
+# Общие слова про автомобили, новинки и концепты
+AUTO_KEYWORDS = [
     # Английские
-    "smartphone", "phone", "handset", "flagship",
-    "chipset", "snapdragon", "mediatek", "dimensity",
-    "exynos", "tensor", "kirin", "unisoc",
-    "camera phone", "selfie camera", "main camera",
-    # Ожидаемые новинки / прототипы
-    "leak", "leaks", "rumor", "rumors", "rumour", "rumours",
-    "expected", "upcoming", "prototype", "concept",
-    "launch", "unveil", "announce", "release date",
-    "hands-on", "first look", "render", "renders", "teaser",
-    "specs leak", "specs", "benchmark", "geekbench",
+    "car", "vehicle", "automobile", "auto", "ev", "electric vehicle",
+    "concept car", "concept", "prototype", "premiere", "unveil", "debut",
+    "launch", "leak", "rumor", "spy shot", "production model", "roadster",
+    "coupe", "sedan", "suv", "crossover", "hatchback", "pickup", "truck",
+    "engine", "motor", "horsepower", "hp", "torque", "battery", "range",
+    "charging", "autonomous", "self-driving",
     # Русские
-    "смартфон", "телефон", "флагман", "раскладушка",
-    "процессор", "камера смартфона",
-    "утечка", "утечки", "слух", "слухи",
-    "ожидается", "прототип", "концепт",
-    "анонс", "представят", "выпустят", "рендер", "рендеры",
-    "характеристики", "бенчмарк", "дата выхода",
+    "автомобиль", "машина", "авто", "электромобиль", "электрокар",
+    "концепт", "концепткар", "прототип", "премьера", "дебют", "новинка",
+    "утечка", "слух", "шпионские фото", "серийная модель", "родстер",
+    "купе", "седан", "кроссовер", "внедорожник", "хэтчбек", "пикап", "грузовик",
+    "двигатель", "мотор", "лошадиные силы", "крутящий момент", "батарея",
+    "запас хода", "зарядка", "автономный", "беспилотный",
 ]
 
 # Стоп-слова: если статья содержит хотя бы одно — отбрасываем
 STOP_WORDS = [
-    # Аудио
-    "headphone", "headphones", "earbuds", "earbud", "earphone",
-    "tws", "airpods", "speaker", "soundbar", "наушники", "гарнитура",
-    "колонка", "аудио", "auracast", "ldac", "anc-наушники",
-    # Носимые устройства
-    "smartwatch", "watch", "band", "fitness tracker",
-    "умные часы", "фитнес-браслет", "браслет",
-    # Планшеты, ноутбуки, десктопы
-    "tablet", "ipad", "laptop", "notebook", "macbook",
-    "chromebook", "desktop", "pc", "планшет", "ноутбук",
-    # Умный дом и камеры
-    "smart home", "camera", "webcam", "doorbell", "robot vacuum",
-    "vacuum", "light bulb", "умный дом", "камера видеонаблюдения",
-    "робот-пылесос", "пылесос", "лампочка",
-    # Тарифы, операторы, финансы
-    "tariff", "tariffs", "carrier", "operator", "price hike",
-    "subscription", "plan", "тариф", "оператор", "подписка",
-    # Софт и сервисы (не про смартфон как устройство)
-    "android auto", "carplay", "google wallet", "gemini app",
-    # ТВ, консоли
-    "tv", "television", "console", "playstation", "xbox", "nintendo",
-    "телевизор", "консоль",
+    # Мотоциклы
+    "motorcycle", "motorbike", "scooter", "bike", "atv", "quad",
+    "мотоцикл", "мопед", "скутер", "квадроцикл",
+    # Запчасти и аксессуары (не про сами авто)
+    "tire", "wheel", "brake pad", "oil filter", "spark plug", "accessory",
+    "шины", "колеса", "тормозные колодки", "масляный фильтр", "аксессуары",
+    # Тарифы, страховки, законы
+    "insurance", "tariff", "tax", "fine", "toll", "driving license",
+    "страховка", "тариф", "налог", "штраф", "платная дорога", "права",
+    # Гоночные серии (если это не про новую модель)
+    "f1 race result", "nascar race", "motogp race", "formula 1 race",
+    "результаты гонки", "формула-1 гонка",
 ]
