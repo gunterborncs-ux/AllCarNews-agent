@@ -1,4 +1,4 @@
-name: Smartphones News Agent
+name: Cars News Agent
 
 on:
   schedule:
