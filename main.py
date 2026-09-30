@@ -30,7 +30,7 @@ from dedup import deduplicate
 from rss_sources import (
     RSS_FEEDS,
     CAR_BRANDS,
-    PHONE_KEYWORDS,
+    AUTO_KEYWORDS,
     STOP_WORDS,
 )
 from storage import (
