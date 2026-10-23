@@ -1,8 +1,8 @@
 """
 Суммаризация новостей об автомобилях через OpenRouter.
 
-Формат ответа — обычный текст с разделителем ===POST===.
-Жёсткая валидация: пост отклоняется, если кириллицы в нём меньше 40%.
+Формат: заголовок <b>, текст, ссылка в виде <a href="URL">Источник</a>.
+Жёсткая языковая валидация: кириллицы >= 40%.
 """
 import logging
 import re
@@ -23,45 +23,102 @@ _client = AsyncOpenAI(
     api_key=OPENROUTER_KEY,
 )
 
-SYSTEM_PROMPT = """Ты — редактор русскоязычного Telegram-канала об автомобилях.
+SYSTEM_PROMPT = """You are the editor of a Russian-language Telegram channel about cars.
 
-⚠️ ГЛАВНОЕ ПРАВИЛО: все посты ТОЛЬКО на русском языке.
-Если новость на английском — ПЕРЕВЕДИ её на русский. Названия моделей
-(Tesla Model 3, BMW iX, Toyota Camry) оставляй латиницей, всё остальное —
-по-русски.
+═══════════════════════════════════════════════════════════
+🔴 CRITICAL LANGUAGE RULE — READ BEFORE ANYTHING ELSE 🔴
+═══════════════════════════════════════════════════════════
+OUTPUT LANGUAGE: RUSSIAN ONLY.
 
-Создай от 3 до 5 постов ТОЛЬКО об автомобилях: новинки, концепткары,
-электромобили, прототипы, утечки, даты презентаций, характеристики.
+- Even if the input news is in English (or any other language),
+  you MUST translate it and write the post in RUSSIAN.
+- Do NOT output English sentences. Do NOT mix languages.
+- Brand names and model names (Tesla Model 3, BMW iX, Toyota Camry,
+  Porsche 911, Lucid Air) MAY stay in Latin script.
+- Everything else MUST be in Russian Cyrillic.
 
-ИГНОРИРУЙ: мотоциклы, запчасти, шины, тарифы, страховки, налоги,
-F1/NASCAR/MotoGP, водный и воздушный транспорт, сельхозтехнику.
+A post written in English will be automatically REJECTED.
 
-Требования к каждому посту:
-- Первая строка: эмодзи, пробел, затем ОБЯЗАТЕЛЬНО заголовок
-  в теге <b>...</b> (до 80 символов, на русском)
-- Вторая строка: пустая
-- Затем 2–3 предложения НА РУССКОМ: модели, характеристики, цифры, сроки
-- В конце — ссылка: <a href="URL">Источник</a>
-- До 600 символов
-- Эмодзи ВНЕ тега <b>, например: 🚗 <b>Заголовок</b>
+═══════════════════════════════════════════════════════════
+YOUR TASK
+═══════════════════════════════════════════════════════════
+From the news list below, produce 3 to 5 separate Telegram posts.
 
-ПРИМЕР ПРАВИЛЬНОГО ПОСТА:
+TOPIC — CARS ONLY:
+- New car models, launches, announcements
+- Concept cars and prototypes
+- Electric vehicles and hybrids
+- Leaks, spy shots, renders of upcoming cars
+- Reviews, comparisons, test drives
+- Specs: engine, power, torque, range, battery, price
+
+IGNORE (do not create posts for):
+- Motorcycles, scooters, ATVs
+- Parts, tires, accessories
+- Tariffs, insurance, taxes, traffic laws
+- F1, NASCAR, MotoGP racing series
+- Water and air transport
+- Agricultural machinery
+- Smartphones or consumer electronics
+
+If fewer than 3 items match the topic, produce as many as you can.
+NEVER pad the list with off-topic news.
+
+═══════════════════════════════════════════════════════════
+FORMAT REQUIREMENTS (per post, all fields in RUSSIAN)
+═══════════════════════════════════════════════════════════
+1. First line: one emoji + space + bold headline wrapped in <b>...</b>
+   - Headline: RUSSIAN, max 80 characters
+   - Emoji stays OUTSIDE the <b> tag
+2. Second line: empty line
+3. Then 2–3 sentences IN RUSSIAN with facts, numbers, model names
+4. Last line: clickable link with the label "Источник"
+   - Exact format: <a href="URL">Источник</a>
+   - The label MUST be the Russian word "Источник"
+   - Do NOT use bare URLs
+   - Do NOT use other labels ("Source", "Ссылка", "Читать")
+5. Total post length: up to 600 characters
+6. Tone: neutral, informative, no clickbait
+
+═══════════════════════════════════════════════════════════
+OUTPUT FORMAT
+═══════════════════════════════════════════════════════════
+Posts are separated by the exact line: ===POST===
+Do NOT output JSON, markdown, numbering, or explanations.
+
+═══════════════════════════════════════════════════════════
+✅ CORRECT EXAMPLE (study the language and format)
+═══════════════════════════════════════════════════════════
 
 ===POST===
 
 🚗 <b>Tesla представила обновлённый Model Y</b>
 
-Электрокроссовер получил новую батарею на 82 кВт·ч и запас хода
-до 600 км по циклу WLTP. Производство стартует в первом квартале 2027 года.
-<a href="URL1">Источник</a>
+Электрокроссовер получил новую батарею на 82 кВт·ч и запас хода до 600 км по циклу WLTP. Производство стартует в первом квартале 2027 года.
 
-ЗАПРЕЩЕНО:
-- Писать посты на английском
-- Использовать **markdown** вместо <b>
-- Добавлять пояснения до/после постов
-- URL брать не из исходных данных
+<a href="https://example.com/article-1">Источник</a>
 
-Между постами — строго строка ===POST===.
+===POST===
+
+⚡ <b>Porsche показал концепт электрического Cayenne</b>
+
+Прототип оснащён двумя электромоторами суммарной мощностью 800 л.с. и поддерживает зарядку 350 кВт. Серийная версия ожидается к концу 2027 года.
+
+<a href="https://example.com/article-2">Источник</a>
+
+═══════════════════════════════════════════════════════════
+❌ FORBIDDEN
+═══════════════════════════════════════════════════════════
+- Writing posts in English (or any language other than Russian)
+- Using **markdown bold** instead of <b>...</b>
+- Bare URLs without <a href="...">Источник</a> wrapper
+- Using any label other than "Источник" for the link
+- Mixing English and Russian in body text
+- Adding comments before, between, or after posts
+- Inventing URLs — use ONLY URLs from the input data
+
+Remember: OUTPUT MUST BE IN RUSSIAN, and the link MUST be
+<a href="URL">Источник</a>.
 """
 
 
@@ -77,13 +134,38 @@ def _clean_unicode(text: str) -> str:
     return text
 
 
+def _normalize_source_link(text: str) -> str:
+    """Приводит ссылку в конце поста к <a href="URL">Источник</a>."""
+    # 1) Нормализуем существующий <a href="...">label</a>
+    text = re.sub(
+        r'<a\s+href="([^"]+)"[^>]*>[^<]*</a>',
+        r'<a href="\1">Источник</a>',
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # 2) Если <a href> нет, оборачиваем последний голый URL
+    if "<a href=" not in text.lower():
+        matches = list(re.finditer(r'https?://[^\s<>"\']+', text))
+        if matches:
+            last = matches[-1]
+            url = last.group(0).rstrip(".,;:)")
+            before = text[:last.start()]
+            after = text[last.end():]
+            text = before + f'<a href="{url}">Источник</a>' + after
+
+    return text
+
+
 def _clean_post(text: str) -> str:
     text = text.strip()
     text = re.sub(r"^```[\w]*\s*", "", text)
     text = re.sub(r"\s*```\s*$", "", text)
     text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    text = re.sub(r"(?i)(источник|source)\s*:\s*(https?://)", r"\2", text)
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
+    text = _normalize_source_link(text)
     return text.strip()
 
 
@@ -98,35 +180,23 @@ def _is_emoji(ch: str) -> bool:
 
 
 def _cyrillic_ratio(text: str) -> float:
-    """
-    Доля кириллических букв среди всех букв (латиница + кириллица).
-    Если букв нет вообще — вернуть 0.
-    """
-    cyrillic = len(re.findall(r"[А-Яа-яЁё]", text))
-    latin = len(re.findall(r"[A-Za-z]", text))
-    total = cyrillic + latin
-    if total == 0:
-        return 0.0
-    return cyrillic / total
+    cyr = len(re.findall(r"[А-Яа-яЁё]", text))
+    lat = len(re.findall(r"[A-Za-z]", text))
+    total = cyr + lat
+    return cyr / total if total else 0.0
 
 
 def _is_valid_post(text: str, max_len: int = 600) -> bool:
-    """
-    Пост должен:
-    - начинаться с эмодзи
-    - содержать <a href=
-    - содержать <b>...</b>
-    - иметь >= 40% кириллицы (иначе считаем «англоязычным»)
-    - быть не длиннее max_len
-    """
     if not text or len(text) > max_len:
         return False
     stripped = text.strip()
     if not stripped or not _is_emoji(stripped[0]):
         return False
-    if "<a href=" not in stripped:
-        return False
     if "<b>" not in stripped:
+        return False
+    if '<a href=' not in stripped.lower():
+        return False
+    if "Источник" not in stripped:
         return False
 
     ratio = _cyrillic_ratio(stripped)
@@ -146,15 +216,14 @@ def _parse_posts(raw: str) -> list[str]:
     if not raw or len(raw) < 50:
         logger.warning("Ответ модели слишком короткий (%d символов)", len(raw))
         return []
-
     raw = _clean_unicode(raw)
 
-    if _DELIMITER.search(raw):
-        parts = _DELIMITER.split(raw)
-        logger.info("Разделитель ===POST=== сработал, частей: %d", len(parts))
-    else:
+    if not _DELIMITER.search(raw):
         logger.warning("Разделитель ===POST=== не найден")
         return []
+
+    parts = _DELIMITER.split(raw)
+    logger.info("Разделитель сработал, частей: %d", len(parts))
 
     posts: list[str] = []
     for i, part in enumerate(parts):
@@ -171,7 +240,6 @@ def _parse_posts(raw: str) -> list[str]:
 
 
 async def summarize_news(articles: list[dict]) -> list[str]:
-    """Превращает новости в готовые посты через OpenRouter."""
     if not articles:
         return []
 
@@ -194,13 +262,10 @@ async def summarize_news(articles: list[dict]) -> list[str]:
                 temperature=0.3,
                 max_tokens=4096,
             )
-
             choice = response.choices[0]
             finish = getattr(choice, "finish_reason", "unknown")
             raw = choice.message.content or ""
-            logger.info(
-                "Сырой ответ (%d символов, finish=%s)", len(raw), finish,
-            )
+            logger.info("Сырой ответ (%d символов, finish=%s)", len(raw), finish)
 
             posts = _parse_posts(raw)
             if posts:
