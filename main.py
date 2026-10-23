@@ -1,18 +1,21 @@
 """
 Auto News Agent.
 
-Публикует посты со всеми фото из RSS (альбом при 2+ изображениях),
+Публикует посты со всеми фото (из RSS + fallback на HTML статьи),
 ссылка — <a href="URL">Источник</a>.
 """
 import asyncio
+import json
 import logging
 import re
 import traceback
+from urllib.parse import urljoin
 
 import aiohttp
 import feedparser
 from aiogram import Bot
 from aiogram.types import InputMediaPhoto
+from bs4 import BeautifulSoup
 
 from config import (
     BOT_TOKEN,
@@ -48,26 +51,34 @@ _LEAK_MARKERS = (
 )
 
 _HREF_RE = re.compile(r'<a\s+href="([^"]+)"', re.IGNORECASE)
-_MAX_PHOTOS_PER_POST = 10
+_MAX_PHOTOS_PER_POST = 10  # лимит Telegram sendMediaGroup
+
+_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
+
+# Мусорные фрагменты URL, которые не являются контентными фото
+_JUNK_MARKERS = (
+    "/pixel", "1x1", "spacer", "tracking", "beacon",
+    "favicon", "/icon/", "avatar", "logo.svg", "/emoji/",
+)
 
 
 def _html_escape(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-# ---------- Извлечение медиа ----------
+# ---------- Извлечение медиа из RSS ----------
 
 def _extract_media(entry: dict) -> tuple[list[str], str | None]:
-    """
-    Возвращает (images, video_url).
-    Собирает все изображения из media_content, media_thumbnail,
-    enclosures и <img> в summary.
-    """
+    """Собирает все фото и видео из полей RSS-записи."""
     images: list[str] = []
     seen: set[str] = set()
     video: str | None = None
 
-    def _add_image(url: str) -> None:
+    def _add(url: str) -> None:
         if url and url not in seen:
             seen.add(url)
             images.append(url)
@@ -80,10 +91,10 @@ def _extract_media(entry: dict) -> tuple[list[str], str | None]:
         if mtype.startswith("video/") and not video:
             video = url
         elif mtype.startswith("image/"):
-            _add_image(url)
+            _add(url)
 
     for mt in (entry.get("media_thumbnail") or []):
-        _add_image(mt.get("url", ""))
+        _add(mt.get("url", ""))
 
     for enc in (entry.get("enclosures") or []):
         url = enc.get("href") or enc.get("url", "")
@@ -93,13 +104,120 @@ def _extract_media(entry: dict) -> tuple[list[str], str | None]:
         if mtype.startswith("video/") and not video:
             video = url
         elif mtype.startswith("image/"):
-            _add_image(url)
+            _add(url)
 
     summary = entry.get("summary", "") or ""
     for m in re.finditer(r'<img[^>]+src=["\']([^"\']+)["\']', summary):
-        _add_image(m.group(1))
+        _add(m.group(1))
 
     return images, video
+
+
+# ---------- Fallback: фото из HTML статьи ----------
+
+async def fetch_article_images(
+    session: aiohttp.ClientSession, url: str,
+) -> list[str]:
+    """
+    Загружает HTML статьи и извлекает все контентные изображения:
+    og:image, twitter:image, JSON-LD image, <img> из <article>/<main>.
+    """
+    try:
+        async with session.get(
+            url,
+            timeout=aiohttp.ClientTimeout(total=15),
+            headers={
+                "User-Agent": _UA,
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "ru,en;q=0.5",
+            },
+        ) as resp:
+            if resp.status != 200:
+                logger.warning("HTML %s → статус %s", url, resp.status)
+                return []
+            html = await resp.text(errors="ignore")
+    except Exception as exc:
+        logger.warning("Не удалось загрузить статью %s: %s", url, exc)
+        return []
+
+    soup = BeautifulSoup(html, "html.parser")
+    images: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: str) -> None:
+        if not raw or not isinstance(raw, str):
+            return
+        raw = raw.strip()
+        if not raw:
+            return
+        abs_url = urljoin(url, raw)
+        low = abs_url.lower()
+        if low.startswith(("data:", "blob:", "javascript:")):
+            return
+        if any(marker in low for marker in _JUNK_MARKERS):
+            return
+        if low.endswith(".svg") or ".svg?" in low:
+            return
+        if abs_url not in seen:
+            seen.add(abs_url)
+            images.append(abs_url)
+
+    # og:image и twitter:image
+    for tag in soup.find_all("meta"):
+        prop = (tag.get("property") or tag.get("name") or "").lower()
+        if prop in (
+            "og:image", "og:image:url", "og:image:secure_url",
+            "twitter:image", "twitter:image:src",
+        ):
+            _add(tag.get("content", ""))
+
+    # JSON-LD
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        try:
+            data = json.loads(script.string or "")
+        except Exception:
+            continue
+        items = data if isinstance(data, list) else [data]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            img = item.get("image")
+            if isinstance(img, str):
+                _add(img)
+            elif isinstance(img, list):
+                for x in img:
+                    if isinstance(x, str):
+                        _add(x)
+                    elif isinstance(x, dict):
+                        _add(x.get("url", ""))
+            elif isinstance(img, dict):
+                _add(img.get("url", ""))
+
+    # <img> из основного контента
+    containers = soup.find_all("article") or soup.find_all("main") or [soup]
+    for container in containers:
+        for img in container.find_all("img"):
+            w, h = img.get("width"), img.get("height")
+            try:
+                if w and int(w) < 200:
+                    continue
+                if h and int(h) < 200:
+                    continue
+            except (ValueError, TypeError):
+                pass
+            src = (
+                img.get("src")
+                or img.get("data-src")
+                or img.get("data-original")
+                or img.get("data-lazy-src")
+            )
+            if not src:
+                srcset = img.get("srcset") or img.get("data-srcset") or ""
+                if srcset:
+                    src = srcset.split(",")[0].strip().split(" ")[0]
+            _add(src)
+
+    return images[:_MAX_PHOTOS_PER_POST]
 
 
 # ---------- RSS ----------
@@ -197,10 +315,7 @@ async def _send_single_post(
     if video:
         try:
             await bot.send_video(
-                chat_id=CHANNEL_ID,
-                video=video,
-                caption=post,
-                parse_mode="HTML",
+                chat_id=CHANNEL_ID, video=video, caption=post, parse_mode="HTML",
             )
             logger.info("Пост с видео: %s...", post[:60])
             return True
@@ -227,10 +342,7 @@ async def _send_single_post(
     if photos:
         try:
             await bot.send_photo(
-                chat_id=CHANNEL_ID,
-                photo=photos[0],
-                caption=post,
-                parse_mode="HTML",
+                chat_id=CHANNEL_ID, photo=photos[0], caption=post, parse_mode="HTML",
             )
             logger.info("Пост с фото: %s...", post[:60])
             return True
@@ -239,10 +351,8 @@ async def _send_single_post(
 
     try:
         await bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=post,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
+            chat_id=CHANNEL_ID, text=post,
+            parse_mode="HTML", disable_web_page_preview=True,
         )
         logger.info("Текстовый пост: %s...", post[:60])
         return True
@@ -255,13 +365,31 @@ async def publish_posts(
     bot: Bot, posts: list[str], articles: list[dict],
 ) -> list[str]:
     published: list[str] = []
-    for post in posts:
-        article = _match_article(post, articles)
-        images = article.get("images", []) if article else []
-        video = article.get("video") if article else None
-        if await _send_single_post(bot, post, images, video):
-            published.append(post)
-            await asyncio.sleep(POST_DELAY_SECONDS)
+    async with aiohttp.ClientSession() as session:
+        for post in posts:
+            article = _match_article(post, articles)
+            images = list(article.get("images", [])) if article else []
+            video = article.get("video") if article else None
+
+            # Fallback: если RSS не дал медиа — идём в HTML статьи
+            if not images and not video and article:
+                logger.info(
+                    "В RSS нет медиа для %s — загружаю HTML статьи",
+                    article["link"],
+                )
+                images = await fetch_article_images(session, article["link"])
+                if images:
+                    logger.info(
+                        "Из HTML извлечено фото: %d", len(images),
+                    )
+                else:
+                    logger.warning(
+                        "HTML не дал фото: %s", article["link"],
+                    )
+
+            if await _send_single_post(bot, post, images, video):
+                published.append(post)
+                await asyncio.sleep(POST_DELAY_SECONDS)
     return published
 
 
