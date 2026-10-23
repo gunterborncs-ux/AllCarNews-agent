@@ -1,8 +1,7 @@
 """
 Auto News Agent.
 
-Медиа (фото + видео) берётся ТОЛЬКО из HTML статьи.
-RSS — только источник заголовков и ссылок.
+Медиа — только фото из HTML статьи. RSS — источник заголовков и ссылок.
 Ссылка в посте — <a href="URL">Источник</a>.
 Фото дедуплицируются по нормализованному URL.
 """
@@ -66,13 +65,6 @@ _JUNK_MARKERS = (
     "favicon", "/icon/", "avatar", "logo.svg", "/emoji/",
 )
 
-# Регулярки для YouTube / Vimeo embed
-_YT_RE = re.compile(
-    r"(?:youtube\.com/(?:embed|watch\?v=)|youtu\.be/)([A-Za-z0-9_\-]{6,})",
-    re.IGNORECASE,
-)
-_VIMEO_RE = re.compile(r"vimeo\.com/(?:video/)?(\d+)", re.IGNORECASE)
-
 
 def _html_escape(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -132,37 +124,14 @@ def _normalize_image_url(url: str) -> str:
     ))
 
 
-# ---------- Фото и видео из HTML статьи ----------
+# ---------- Фото из HTML статьи ----------
 
-def _extract_video_url_from_embed(embed_url: str) -> str | None:
-    """
-    Из embed-ссылки YouTube/Vimeo возвращает прямой URL страницы видео.
-    Telegram не умеет проигрывать embed, но умеет плеер по обычной ссылке.
-    """
-    m = _YT_RE.search(embed_url)
-    if m:
-        return f"https://www.youtube.com/watch?v={m.group(1)}"
-    m = _VIMEO_RE.search(embed_url)
-    if m:
-        return f"https://vimeo.com/{m.group(1)}"
-    return None
-
-
-async def fetch_article_media(
+async def fetch_article_images(
     session: aiohttp.ClientSession, url: str,
-) -> tuple[list[str], str | None]:
+) -> list[str]:
     """
-    Загружает HTML статьи и возвращает (images, video_url).
-
-    Фото:
-      og:image, twitter:image, JSON-LD image, <img> из <article>/<main>.
-
-    Видео (первое найденное по приоритету):
-      1. og:video / og:video:url / og:video:secure_url
-      2. twitter:player:stream
-      3. JSON-LD video (contentUrl / embedUrl / url)
-      4. <video src> или <source src> внутри <video>
-      5. <iframe> с YouTube/Vimeo embed → конвертируется в обычный URL
+    Загружает HTML статьи и извлекает уникальные контентные фото:
+    og:image, twitter:image, JSON-LD image, <img> из <article>/<main>.
     """
     try:
         async with session.get(
@@ -176,18 +145,17 @@ async def fetch_article_media(
         ) as resp:
             if resp.status != 200:
                 logger.warning("HTML %s → статус %s", url, resp.status)
-                return [], None
+                return []
             html = await resp.text(errors="ignore")
     except Exception as exc:
         logger.warning("Не удалось загрузить статью %s: %s", url, exc)
-        return [], None
+        return []
 
     soup = BeautifulSoup(html, "html.parser")
     images: list[str] = []
     seen_norm: set[str] = set()
-    video: str | None = None
 
-    def _add_img(raw: str) -> None:
+    def _add(raw: str) -> None:
         if not raw or not isinstance(raw, str):
             return
         raw = raw.strip()
@@ -207,20 +175,6 @@ async def fetch_article_media(
             seen_norm.add(norm)
             images.append(abs_url)
 
-    def _set_video(raw: str | None) -> None:
-        nonlocal video
-        if video or not raw or not isinstance(raw, str):
-            return
-        raw = raw.strip()
-        if not raw:
-            return
-        abs_url = urljoin(url, raw)
-        if abs_url.lower().startswith(("data:", "blob:", "javascript:")):
-            return
-        video = abs_url
-
-    # ---- Фото ----
-
     # og:image / twitter:image
     for tag in soup.find_all("meta"):
         prop = (tag.get("property") or tag.get("name") or "").lower()
@@ -228,9 +182,9 @@ async def fetch_article_media(
             "og:image", "og:image:url", "og:image:secure_url",
             "twitter:image", "twitter:image:src",
         ):
-            _add_img(tag.get("content", ""))
+            _add(tag.get("content", ""))
 
-    # JSON-LD (image + video)
+    # JSON-LD image
     for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
         try:
             data = json.loads(script.string or "")
@@ -240,34 +194,19 @@ async def fetch_article_media(
         for item in items:
             if not isinstance(item, dict):
                 continue
-
             img = item.get("image")
             if isinstance(img, str):
-                _add_img(img)
+                _add(img)
             elif isinstance(img, list):
                 for x in img:
                     if isinstance(x, str):
-                        _add_img(x)
+                        _add(x)
                     elif isinstance(x, dict):
-                        _add_img(x.get("url", ""))
+                        _add(x.get("url", ""))
             elif isinstance(img, dict):
-                _add_img(img.get("url", ""))
+                _add(img.get("url", ""))
 
-            vid = item.get("video")
-            if isinstance(vid, dict):
-                for key in ("contentUrl", "embedUrl", "url"):
-                    if vid.get(key):
-                        _set_video(vid[key])
-                        break
-            elif isinstance(vid, list):
-                for v in vid:
-                    if isinstance(v, dict):
-                        for key in ("contentUrl", "embedUrl", "url"):
-                            if v.get(key):
-                                _set_video(v[key])
-                                break
-
-    # <img> из основного контента
+    # <img> из <article>/<main>
     containers = soup.find_all("article") or soup.find_all("main") or [soup]
     for container in containers:
         for img in container.find_all("img"):
@@ -295,52 +234,9 @@ async def fetch_article_media(
                     ]
                     if candidates:
                         src = candidates[-1][0]
-            _add_img(src)
+            _add(src)
 
-    # ---- Видео (если ещё не нашли) ----
-
-    if not video:
-        # og:video / twitter:player:stream
-        for tag in soup.find_all("meta"):
-            prop = (tag.get("property") or tag.get("name") or "").lower()
-            if prop in (
-                "og:video", "og:video:url", "og:video:secure_url",
-                "twitter:player:stream",
-            ):
-                _set_video(tag.get("content", ""))
-                if video:
-                    break
-
-    if not video:
-        # <video src> и <source> внутри <video>
-        for video_tag in soup.find_all("video"):
-            src = video_tag.get("src")
-            if src:
-                _set_video(src)
-                if video:
-                    break
-            for source in video_tag.find_all("source"):
-                src = source.get("src")
-                if src:
-                    _set_video(src)
-                    if video:
-                        break
-            if video:
-                break
-
-    if not video:
-        # YouTube / Vimeo embed
-        for iframe in soup.find_all("iframe"):
-            src = iframe.get("src") or iframe.get("data-src") or ""
-            if not src:
-                continue
-            direct = _extract_video_url_from_embed(src)
-            if direct:
-                _set_video(direct)
-                if video:
-                    break
-
-    return images[:_MAX_PHOTOS_PER_POST], video
+    return images[:_MAX_PHOTOS_PER_POST]
 
 
 # ---------- RSS (только заголовки и ссылки) ----------
@@ -429,29 +325,11 @@ async def notify_admin(bot: Bot, reason: str, details: str = "") -> None:
 # ---------- Публикация ----------
 
 async def _send_single_post(
-    bot: Bot, post: str, images: list[str], video: str | None,
+    bot: Bot, post: str, images: list[str],
 ) -> bool:
-    """
-    Приоритет:
-      1. Видео (sendVideo) — фото игнорируются (ограничение Telegram).
-      2. Альбом 2+ фото (sendMediaGroup).
-      3. Одно фото (sendPhoto).
-      4. Текст (sendMessage).
-    """
-    if video:
-        try:
-            await bot.send_video(
-                chat_id=CHANNEL_ID,
-                video=video,
-                caption=post,
-                parse_mode="HTML",
-            )
-            logger.info("Пост с видео: %s...", post[:60])
-            return True
-        except Exception as exc:
-            logger.warning("Видео не отправилось, fallback: %s", exc)
-
+    """Альбом (2+ фото) → одно фото → текст."""
     photos = images[:_MAX_PHOTOS_PER_POST]
+
     if len(photos) >= 2:
         try:
             media = [
@@ -493,32 +371,26 @@ async def _send_single_post(
 async def publish_posts(
     bot: Bot, posts: list[str], articles: list[dict],
 ) -> list[str]:
-    """
-    Для каждого поста всегда загружает HTML статьи и берёт фото и видео
-    оттуда. RSS медиа не используется вообще.
-    """
+    """Для каждого поста загружает HTML статьи и берёт фото оттуда."""
     published: list[str] = []
     async with aiohttp.ClientSession() as session:
         for post in posts:
             article = _match_article(post, articles)
             images: list[str] = []
-            video: str | None = None
 
             if article:
                 logger.info("Загружаю HTML статьи %s", article["link"])
-                images, video = await fetch_article_media(
-                    session, article["link"],
-                )
-                logger.info(
-                    "Из HTML: фото=%d, видео=%s",
-                    len(images), "да" if video else "нет",
-                )
+                images = await fetch_article_images(session, article["link"])
+                if images:
+                    logger.info("Из HTML извлечено фото: %d", len(images))
+                else:
+                    logger.warning("HTML не дал фото: %s", article["link"])
             else:
                 logger.warning(
-                    "Не удалось сопоставить пост со статьёй — публикую без медиа",
+                    "Не удалось сопоставить пост со статьёй — публикую без фото",
                 )
 
-            if await _send_single_post(bot, post, images, video):
+            if await _send_single_post(bot, post, images):
                 published.append(post)
                 await asyncio.sleep(POST_DELAY_SECONDS)
     return published
