@@ -1,15 +1,18 @@
 """
 Auto News Agent.
 
-Публикует посты со всеми фото (из RSS + fallback на HTML статьи),
+Публикует посты со всеми уникальными фото (из RSS + fallback на HTML статьи),
 ссылка — <a href="URL">Источник</a>.
+
+Фото дедуплицируются по нормализованному URL, чтобы отсеять одинаковые
+картинки в разных размерах (thumb/medium/800x600/@2x и т.п.).
 """
 import asyncio
 import json
 import logging
 import re
 import traceback
-from urllib.parse import urljoin
+from urllib.parse import parse_qs, urljoin, urlparse, urlunparse
 
 import aiohttp
 import feedparser
@@ -51,7 +54,7 @@ _LEAK_MARKERS = (
 )
 
 _HREF_RE = re.compile(r'<a\s+href="([^"]+)"', re.IGNORECASE)
-_MAX_PHOTOS_PER_POST = 10  # лимит Telegram sendMediaGroup
+_MAX_PHOTOS_PER_POST = 10
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -59,7 +62,6 @@ _UA = (
     "Chrome/120.0.0.0 Safari/537.36"
 )
 
-# Мусорные фрагменты URL, которые не являются контентными фото
 _JUNK_MARKERS = (
     "/pixel", "1x1", "spacer", "tracking", "beacon",
     "favicon", "/icon/", "avatar", "logo.svg", "/emoji/",
@@ -70,17 +72,85 @@ def _html_escape(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+# ---------- Нормализация URL картинок ----------
+
+_SIZE_QUERY_KEYS = {
+    "w", "h", "width", "height", "q", "quality",
+    "resize", "fit", "crop", "auto", "dpr", "scale",
+    "size", "v", "ver", "version",
+}
+
+# Суффиксы, которые CMS добавляют к уменьшенным версиям:
+# image-800x600.jpg, image_thumb.jpg, image_small.webp, image@2x.png
+_SIZE_SUFFIX_RE = re.compile(
+    r"""
+    (?:[-_@](?:
+        \d+x\d+          # -800x600
+        |\d+w            # -800w
+        |\d+h            # -600h
+        |\d{2,4}         # -300
+        |thumb|thumbnail
+        |small|medium|large|big|mini
+        |preview|scaled|resized
+        |2x|3x
+    ))+
+    (?=\.(?:jpe?g|png|webp|gif|avif)$)
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _normalize_image_url(url: str) -> str:
+    """
+    Приводит URL к «каноническому» виду, чтобы одна и та же картинка
+    в разных размерах давала одинаковый ключ для дедупликации.
+
+    - Удаляет query-параметры про размеры (w, h, quality, resize, ...)
+    - Удаляет суффиксы вида -800x600, _thumb, @2x перед расширением
+    - Оставляет схему, домен и нормализованный путь
+    """
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url.lower()
+
+    qs = parse_qs(parsed.query, keep_blank_values=True)
+    filtered = {
+        k: v for k, v in qs.items()
+        if k.lower() not in _SIZE_QUERY_KEYS
+    }
+    new_query = "&".join(
+        f"{k}={v[0]}" for k, v in sorted(filtered.items())
+    )
+
+    path = _SIZE_SUFFIX_RE.sub("", parsed.path).lower()
+
+    return urlunparse((
+        parsed.scheme.lower(),
+        parsed.netloc.lower(),
+        path,
+        parsed.params,
+        new_query,
+        "",
+    ))
+
+
 # ---------- Извлечение медиа из RSS ----------
 
 def _extract_media(entry: dict) -> tuple[list[str], str | None]:
-    """Собирает все фото и видео из полей RSS-записи."""
+    """Собирает уникальные фото и видео из полей RSS-записи."""
     images: list[str] = []
-    seen: set[str] = set()
+    seen_norm: set[str] = set()
     video: str | None = None
 
     def _add(url: str) -> None:
-        if url and url not in seen:
-            seen.add(url)
+        if not url:
+            return
+        norm = _normalize_image_url(url)
+        if norm and norm not in seen_norm:
+            seen_norm.add(norm)
             images.append(url)
 
     for mc in (entry.get("media_content") or []):
@@ -110,7 +180,7 @@ def _extract_media(entry: dict) -> tuple[list[str], str | None]:
     for m in re.finditer(r'<img[^>]+src=["\']([^"\']+)["\']', summary):
         _add(m.group(1))
 
-    return images, video
+    return images[:_MAX_PHOTOS_PER_POST], video
 
 
 # ---------- Fallback: фото из HTML статьи ----------
@@ -119,7 +189,7 @@ async def fetch_article_images(
     session: aiohttp.ClientSession, url: str,
 ) -> list[str]:
     """
-    Загружает HTML статьи и извлекает все контентные изображения:
+    Загружает HTML статьи и извлекает уникальные контентные изображения:
     og:image, twitter:image, JSON-LD image, <img> из <article>/<main>.
     """
     try:
@@ -142,7 +212,7 @@ async def fetch_article_images(
 
     soup = BeautifulSoup(html, "html.parser")
     images: list[str] = []
-    seen: set[str] = set()
+    seen_norm: set[str] = set()
 
     def _add(raw: str) -> None:
         if not raw or not isinstance(raw, str):
@@ -158,11 +228,13 @@ async def fetch_article_images(
             return
         if low.endswith(".svg") or ".svg?" in low:
             return
-        if abs_url not in seen:
-            seen.add(abs_url)
+
+        norm = _normalize_image_url(abs_url)
+        if norm and norm not in seen_norm:
+            seen_norm.add(norm)
             images.append(abs_url)
 
-    # og:image и twitter:image
+    # og:image / twitter:image
     for tag in soup.find_all("meta"):
         prop = (tag.get("property") or tag.get("name") or "").lower()
         if prop in (
@@ -214,7 +286,15 @@ async def fetch_article_images(
             if not src:
                 srcset = img.get("srcset") or img.get("data-srcset") or ""
                 if srcset:
-                    src = srcset.split(",")[0].strip().split(" ")[0]
+                    # Берём самый крупный вариант из srcset
+                    candidates = [
+                        part.strip().split(" ")
+                        for part in srcset.split(",")
+                        if part.strip()
+                    ]
+                    # Последний в srcset обычно самый большой
+                    if candidates:
+                        src = candidates[-1][0]
             _add(src)
 
     return images[:_MAX_PHOTOS_PER_POST]
@@ -311,7 +391,7 @@ async def notify_admin(bot: Bot, reason: str, details: str = "") -> None:
 async def _send_single_post(
     bot: Bot, post: str, images: list[str], video: str | None,
 ) -> bool:
-    """Видео → альбом → одно фото → текст."""
+    """Видео → альбом (2+) → одно фото → текст."""
     if video:
         try:
             await bot.send_video(
@@ -379,13 +459,14 @@ async def publish_posts(
                 )
                 images = await fetch_article_images(session, article["link"])
                 if images:
-                    logger.info(
-                        "Из HTML извлечено фото: %d", len(images),
-                    )
+                    logger.info("Из HTML извлечено фото: %d", len(images))
                 else:
-                    logger.warning(
-                        "HTML не дал фото: %s", article["link"],
-                    )
+                    logger.warning("HTML не дал фото: %s", article["link"])
+
+            logger.info(
+                "Итог медиа для поста: %d фото, видео=%s",
+                len(images), "да" if video else "нет",
+            )
 
             if await _send_single_post(bot, post, images, video):
                 published.append(post)
