@@ -1,33 +1,24 @@
-# rss_sources.py
 """
-Источники RSS и правила фильтрации для тематики:
-только автомобили, концепткары, электромобили.
+Источники RSS и правила фильтрации для автомобилей.
+
+STOP_WORDS расширены: мотоциклы, запчасти, страховки, законы,
+гоночные серии. Не пересекается со смартфонами/бытовой техникой.
 """
 
 RSS_FEEDS = [
-    # --- Англоязычные ---
-    "https://insideevs.com/rss/category/artificial-intelligence/", # InsideEVs (AI & EV)
-    "https://www.carscoops.com/feed/",                             # Carscoops
-    "https://www.motor1.com/rss/",                                 # Motor1
-    "https://jalopnik.com/rss",                                    # Jalopnik
-    "https://www.caranddriver.com/rss/all.xml",                    # Car and Driver
-    "https://www.autoblog.com/rss.xml",                            # Autoblog
-    "https://electrek.co/feed/",                                   # Electrek (EV)
-    # --- Русскоязычные ---
-    "https://motor.ru/exports/rss",                                # Motor.ru
-    "https://www.drive.ru/rss",                                    # Drive.ru
-    "https://www.autonews.ru/rss",                                 # Autonews.ru (РБК)
-    "https://www.kolesa.ru/rss",                                   # Kolesa.ru
+    "https://insideevs.com/rss/category/artificial-intelligence/",
+    "https://www.carscoops.com/feed/",
+    "https://www.motor1.com/rss/",
+    "https://jalopnik.com/rss",
+    "https://www.caranddriver.com/rss/all.xml",
+    "https://www.autoblog.com/rss.xml",
+    "https://electrek.co/feed/",
+    "https://motor.ru/exports/rss",
+    "https://www.drive.ru/rss",
+    "https://www.autonews.ru/rss",
+    "https://www.kolesa.ru/rss",
 ]
 
-# ---------------------------------------------------------------------------
-# Правило фильтрации:
-#   статья проходит, если содержит >= 1 маркер из CAR_BRANDS
-#   ИЛИ >= 1 маркер из AUTO_KEYWORDS,
-#   И НЕ содержит ни одного стоп-слова из STOP_WORDS.
-# ---------------------------------------------------------------------------
-
-# Марки автомобилей (в нижнем регистре)
 CAR_BRANDS = [
     "tesla", "toyota", "volkswagen", "vw", "ford", "honda", "bmw", "mercedes",
     "audi", "porsche", "lamborghini", "ferrari", "mclaren", "aston martin",
@@ -41,16 +32,13 @@ CAR_BRANDS = [
     "seat", "cupra", "opel", "vauxhall", "fiat", "alfa romeo", "lancia",
 ]
 
-# Общие слова про автомобили, новинки и концепты
 AUTO_KEYWORDS = [
-    # Английские
     "car", "vehicle", "automobile", "auto", "ev", "electric vehicle",
     "concept car", "concept", "prototype", "premiere", "unveil", "debut",
     "launch", "leak", "rumor", "spy shot", "production model", "roadster",
     "coupe", "sedan", "suv", "crossover", "hatchback", "pickup", "truck",
     "engine", "motor", "horsepower", "hp", "torque", "battery", "range",
     "charging", "autonomous", "self-driving",
-    # Русские
     "автомобиль", "машина", "авто", "электромобиль", "электрокар",
     "концепт", "концепткар", "прототип", "премьера", "дебют", "новинка",
     "утечка", "слух", "шпионские фото", "серийная модель", "родстер",
@@ -59,18 +47,25 @@ AUTO_KEYWORDS = [
     "запас хода", "зарядка", "автономный", "беспилотный",
 ]
 
-# Стоп-слова: если статья содержит хотя бы одно — отбрасываем
 STOP_WORDS = [
-    # Мотоциклы
+    # ============ МОТОТЕХНИКА ============
     "motorcycle", "motorbike", "scooter", "bike", "atv", "quad",
-    "мотоцикл", "мопед", "скутер", "квадроцикл",
-    # Запчасти и аксессуары (не про сами авто)
-    "tire", "wheel", "brake pad", "oil filter", "spark plug", "accessory",
+    "мотоцикл", "мопед", "скутер", "квадроцикл", "снегоход",
+
+    # ============ ЗАПЧАСТИ / АКСЕССУАРЫ ============
+    "tire", "tires", "wheel", "wheels", "brake pad", "oil filter",
+    "spark plug", "accessory",
     "шины", "колеса", "тормозные колодки", "масляный фильтр", "аксессуары",
-    # Тарифы, страховки, законы
+
+    # ============ СТРАХОВКИ / ЗАКОНЫ ============
     "insurance", "tariff", "tax", "fine", "toll", "driving license",
     "страховка", "тариф", "налог", "штраф", "платная дорога", "права",
-    # Гоночные серии (если это не про новую модель)
+
+    # ============ ГОНОЧНЫЕ СЕРИИ ============
     "f1 race result", "nascar race", "motogp race", "formula 1 race",
     "результаты гонки", "формула-1 гонка",
+
+    # ============ НЕ АВТО ============
+    "smartphone", "смартфон", "планшет", "tablet", "наушники",
+    "бытовая техника", "холодильник", "стиральная машина",
 ]
