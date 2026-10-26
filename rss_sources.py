@@ -1,22 +1,21 @@
 """
 Источники RSS и правила фильтрации для автомобилей.
-
-STOP_WORDS расширены: мотоциклы, запчасти, страховки, законы,
-гоночные серии. Не пересекается со смартфонами/бытовой техникой.
+Только российские сайты.
 """
 
 RSS_FEEDS = [
-    "https://insideevs.com/rss/category/artificial-intelligence/",
-    "https://www.carscoops.com/feed/",
-    "https://www.motor1.com/rss/",
-    "https://jalopnik.com/rss",
-    "https://www.caranddriver.com/rss/all.xml",
-    "https://www.autoblog.com/rss.xml",
-    "https://electrek.co/feed/",
-    "https://motor.ru/exports/rss",
+    # Motor.ru — ведущее автомобильное издание
+    "https://motor.ru/rss",
+    # Drive.ru — обзоры и тест-драйвы
     "https://www.drive.ru/rss",
-    "https://www.autonews.ru/rss",
+    # Kolesa.ru — автомобильный онлайн-журнал
     "https://www.kolesa.ru/rss",
+    # Auto.ru — новости и обзоры
+    "https://auto.ru/mag/rss/",
+    # Автовзгляд
+    "https://www.avtovzglyad.ru/rss/",
+    # АиФ Авто
+    "https://aif.ru/rss/automobile.php",
 ]
 
 CAR_BRANDS = [
@@ -30,6 +29,7 @@ CAR_BRANDS = [
     "lucid", "rivian", "fisker", "bugatti", "koenigsegg", "pagani", "lotus",
     "alpine", "maserati", "peugeot", "citroen", "renault", "dacia", "skoda",
     "seat", "cupra", "opel", "vauxhall", "fiat", "alfa romeo", "lancia",
+    "лада", "lada", "москвич", "газ", "уаз", "камаз",
 ]
 
 AUTO_KEYWORDS = [
