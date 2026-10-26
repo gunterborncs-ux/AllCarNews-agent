@@ -1,12 +1,12 @@
 """
 Auto News Agent.
 
-Трёхуровневая логика фото:
-  1. og:image из HTML статьи
-  2. RSS-медиа (media:content / media:thumbnail / enclosure / <img> в description)
-  3. Placeholder (brand + заголовок) — если USE_PLACEHOLDER_IF_NO_PHOTO=True
-
-Ссылка — <a href="URL">Источник</a>.
+Логика фото:
+  1. Скачиваем картинку сами (HTML og:image, с Referer: article_url) —
+     обходим CDN, которые блокируют серверы Telegram
+  2. При ошибке — пробуем RSS-медиа
+  3. Если ничего — placeholder
+  4. Если и placeholder не зашёл — текст
 """
 import asyncio
 import json
@@ -18,6 +18,7 @@ from urllib.parse import quote, urljoin, urlparse
 import aiohttp
 import feedparser
 from aiogram import Bot
+from aiogram.types import BufferedInputFile
 from bs4 import BeautifulSoup
 
 from config import (
@@ -62,12 +63,14 @@ _JUNK_MARKERS = (
     "favicon", "/icon/", "avatar", "logo.svg", "/emoji/",
 )
 
+# Telegram не примет фото больше 10 МБ при upload
+_MAX_IMAGE_BYTES = 9 * 1024 * 1024
+_MIN_IMAGE_BYTES = 1024
+
 
 def _html_escape(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-
-# ---------- Утилиты ----------
 
 def _is_valid_image_url(url: str) -> bool:
     if not url or not isinstance(url, str):
@@ -98,11 +101,6 @@ def _normalize_url_for_match(url: str) -> str:
 
 
 def _url_fingerprint(url: str) -> str:
-    """
-    Отпечаток URL для устойчивого матчинга:
-    домен без www + последний непустой сегмент пути без расширения.
-    Например: https://motor.ru/news/bmw-x5-2027 → motor.ru/bmw-x5-2027
-    """
     if not url:
         return ""
     try:
@@ -115,15 +113,10 @@ def _url_fingerprint(url: str) -> str:
     segments = [s for s in p.path.split("/") if s]
     if not segments:
         return netloc
-    last = segments[-1].split(".")[0]
-    return f"{netloc}/{last}"
+    return f"{netloc}/{segments[-1].split('.')[0]}"
 
 
 def _make_placeholder(title: str) -> str:
-    """
-    Генерирует URL placeholder-картинки. Пытается найти бренд в заголовке
-    и использовать его как текст. Иначе — первые 25 символов заголовка.
-    """
     title_lower = title.lower()
     text = None
     for brand in CAR_BRANDS:
@@ -132,18 +125,81 @@ def _make_placeholder(title: str) -> str:
             break
     if not text:
         text = title[:25].strip() or "AUTO"
-    text_encoded = quote(text)
-    return PLACEHOLDER_IMAGE_TEMPLATE.format(text=text_encoded)
+    return PLACEHOLDER_IMAGE_TEMPLATE.format(text=quote(text))
 
 
-# ---------- HTML: og:image с retry ----------
+# ---------- Скачивание изображения на нашей стороне ----------
+
+async def _download_image_bytes(
+    session: aiohttp.ClientSession,
+    image_url: str,
+    referer: str = "",
+) -> bytes | None:
+    """
+    Скачивает изображение с правильным Referer.
+    Обходит CDN, которые блокируют серверы Telegram.
+    """
+    headers = {
+        "User-Agent": _UA,
+        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        "Accept-Language": "ru,en;q=0.5",
+    }
+    if referer:
+        headers["Referer"] = referer
+
+    try:
+        async with session.get(
+            image_url,
+            timeout=aiohttp.ClientTimeout(total=20),
+            headers=headers,
+        ) as resp:
+            if resp.status != 200:
+                logger.warning(
+                    "[IMG-DL] %s → HTTP %s", image_url[:100], resp.status,
+                )
+                return None
+            data = await resp.read()
+            if len(data) < _MIN_IMAGE_BYTES:
+                logger.warning(
+                    "[IMG-DL] %s → слишком маленький (%d байт)",
+                    image_url[:100], len(data),
+                )
+                return None
+            if len(data) > _MAX_IMAGE_BYTES:
+                logger.warning(
+                    "[IMG-DL] %s → слишком большой (%d МБ)",
+                    image_url[:100], len(data) // 1024 // 1024,
+                )
+                return None
+            logger.info(
+                "[IMG-DL] %s → OK, %d КБ",
+                image_url[:100], len(data) // 1024,
+            )
+            return data
+    except Exception as exc:
+        logger.warning("[IMG-DL] %s → %s", image_url[:100], exc)
+        return None
+
+
+async def _try_download_first(
+    session: aiohttp.ClientSession,
+    urls: list[str],
+    referer: str = "",
+) -> bytes | None:
+    """Пробует скачать по списку URL, возвращает первые байты."""
+    for url in urls:
+        data = await _download_image_bytes(session, url, referer)
+        if data:
+            return data
+    return None
+
+
+# ---------- HTML: og:image URL (только извлечение, не отправка) ----------
 
 async def _try_fetch_html(
     session: aiohttp.ClientSession, url: str,
 ) -> str | None:
-    """Одна попытка fetch с разными UA и вариациями URL."""
     variants = [url]
-    # Попробовать без www / с https
     if "://www." in url:
         variants.append(url.replace("://www.", "://"))
     if url.startswith("http://"):
@@ -172,24 +228,22 @@ async def _try_fetch_html(
                 ) as resp:
                     if resp.status == 200:
                         return await resp.text(errors="ignore")
-                    logger.warning(
-                        "[HTML] %s → HTTP %s", variant, resp.status,
-                    )
+                    logger.warning("[HTML] %s → HTTP %s", variant, resp.status)
             except Exception as exc:
                 logger.warning("[HTML] %s → %s", variant, exc)
     return None
 
 
-async def fetch_article_image(
+async def fetch_article_image_url(
     session: aiohttp.ClientSession, url: str,
 ) -> str | None:
+    """Возвращает URL картинки-кандидата (не байты)."""
     html = await _try_fetch_html(session, url)
     if not html:
         return None
 
     soup = BeautifulSoup(html, "html.parser")
 
-    # 1. og:image
     for tag in soup.find_all("meta"):
         prop = (tag.get("property") or tag.get("name") or "").lower()
         if prop in ("og:image", "og:image:url", "og:image:secure_url"):
@@ -200,7 +254,6 @@ async def fetch_article_image(
                     logger.info("[HTML] %s → og:image", url)
                     return u
 
-    # 2. twitter:image
     for tag in soup.find_all("meta"):
         prop = (tag.get("property") or tag.get("name") or "").lower()
         if prop in ("twitter:image", "twitter:image:src"):
@@ -211,7 +264,6 @@ async def fetch_article_image(
                     logger.info("[HTML] %s → twitter:image", url)
                     return u
 
-    # 3. JSON-LD
     for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
         try:
             data = json.loads(script.string or "")
@@ -239,7 +291,6 @@ async def fetch_article_image(
                     logger.info("[HTML] %s → JSON-LD", url)
                     return u
 
-    # 4. Первое <img>
     for container in (soup.find_all("article") or soup.find_all("main") or []):
         for img in container.find_all("img"):
             w, h = img.get("width"), img.get("height")
@@ -273,15 +324,9 @@ async def fetch_article_image(
     return None
 
 
-# ---------- RSS: медиа ----------
+# ---------- RSS ----------
 
 def _extract_rss_images(entry: dict, base_url: str) -> list[str]:
-    """
-    Собирает все возможные фото из RSS.
-    Обрабатывает: media_content, media_thumbnail, enclosures,
-    <img> в summary, <img> в content:encoded.
-    Относительные URL приводит к абсолютным через urljoin.
-    """
     images: list[str] = []
     seen: set[str] = set()
 
@@ -291,11 +336,8 @@ def _extract_rss_images(entry: dict, base_url: str) -> list[str]:
         url = url.strip()
         if not url:
             return
-        # Относительные URL → абсолютные
         if url.startswith("//"):
             url = "https:" + url
-        elif url.startswith("/"):
-            url = urljoin(base_url, url)
         elif not (url.startswith("http://") or url.startswith("https://")):
             url = urljoin(base_url, url)
         if url in seen:
@@ -307,10 +349,8 @@ def _extract_rss_images(entry: dict, base_url: str) -> list[str]:
 
     for mc in (entry.get("media_content") or []):
         _add(mc.get("url", ""))
-
     for mt in (entry.get("media_thumbnail") or []):
         _add(mt.get("url", ""))
-
     for enc in (entry.get("enclosures") or []):
         _add(enc.get("href") or enc.get("url", ""))
 
@@ -334,7 +374,10 @@ async def fetch_rss(session: aiohttp.ClientSession, url: str) -> list[dict]:
         async with session.get(
             url,
             timeout=aiohttp.ClientTimeout(total=20),
-            headers={"User-Agent": _UA, "Accept": "application/rss+xml,application/xml,text/xml,*/*"},
+            headers={
+                "User-Agent": _UA,
+                "Accept": "application/rss+xml,application/xml,text/xml,*/*",
+            },
         ) as resp:
             raw = await resp.read()
         feed = feedparser.parse(raw)
@@ -381,13 +424,11 @@ async def collect_all_news() -> list[dict]:
     relevant = [a for a in all_articles if is_relevant(a)]
     with_photo = sum(1 for a in relevant if a.get("rss_images"))
     logger.info(
-        "Собрано: %d, релевантных: %d (из них с RSS-фото: %d)",
+        "Собрано: %d, релевантных: %d (с RSS-фото: %d)",
         len(all_articles), len(relevant), with_photo,
     )
     return relevant
 
-
-# ---------- Матчинг пост → статья ----------
 
 def _match_article(post: str, articles: list[dict]) -> dict | None:
     hrefs = set(_HREF_RE.findall(post))
@@ -395,20 +436,17 @@ def _match_article(post: str, articles: list[dict]) -> dict | None:
         logger.warning("[MATCH] нет <a href> в посте")
         return None
 
-    # 1. Точный match
     for a in articles:
         if a.get("link") in hrefs:
             logger.info("[MATCH] точно: %s", a["link"][:80])
             return a
 
-    # 2. Нормализованный (без схемы/www/trailing slash)
     post_norms = {_normalize_url_for_match(u) for u in hrefs}
     for a in articles:
         if _normalize_url_for_match(a.get("link", "")) in post_norms:
             logger.info("[MATCH] нормализованно: %s", a["link"][:80])
             return a
 
-    # 3. По отпечатку (домен + slug)
     post_fps = {_url_fingerprint(u) for u in hrefs}
     for a in articles:
         if _url_fingerprint(a.get("link", "")) in post_fps:
@@ -422,8 +460,6 @@ def _match_article(post: str, articles: list[dict]) -> dict | None:
     )
     return None
 
-
-# ---------- Уведомления ----------
 
 async def notify_admin(bot: Bot, reason: str, details: str = "") -> None:
     if not ADMIN_CHAT_ID:
@@ -444,21 +480,21 @@ async def notify_admin(bot: Bot, reason: str, details: str = "") -> None:
 # ---------- Публикация ----------
 
 async def _send_single_post(
-    bot: Bot, post: str, image: str | None, title: str,
+    bot: Bot, post: str, image_bytes: bytes | None, title: str,
 ) -> bool:
-    if image:
+    """Отправка: bytes → placeholder → текст."""
+    if image_bytes:
         try:
+            photo = BufferedInputFile(image_bytes, filename="photo.jpg")
             await bot.send_photo(
-                chat_id=CHANNEL_ID, photo=image, caption=post, parse_mode="HTML",
+                chat_id=CHANNEL_ID, photo=photo,
+                caption=post, parse_mode="HTML",
             )
-            logger.info("[SEND] фото OK: %s...", post[:60])
+            logger.info("[SEND] фото (bytes) OK: %s...", post[:60])
             return True
         except Exception as exc:
-            logger.warning(
-                "[SEND] send_photo упал: %s | URL: %s", exc, image[:120],
-            )
+            logger.warning("[SEND] send_photo(bytes) упал: %s", exc)
 
-    # Последний шанс: placeholder
     if USE_PLACEHOLDER_IF_NO_PHOTO:
         placeholder = _make_placeholder(title)
         try:
@@ -469,7 +505,7 @@ async def _send_single_post(
             logger.info("[SEND] placeholder OK: %s...", post[:60])
             return True
         except Exception as exc:
-            logger.warning("[SEND] placeholder тоже упал: %s", exc)
+            logger.warning("[SEND] placeholder упал: %s", exc)
 
     try:
         await bot.send_message(
@@ -486,35 +522,54 @@ async def _send_single_post(
 async def publish_posts(
     bot: Bot, posts: list[str], articles: list[dict],
 ) -> list[str]:
+    """
+    Логика фото:
+      1. og:image из HTML → скачиваем байты (с Referer: article_url)
+      2. Если не удалось — RSS-медиа → тоже скачиваем байты
+      3. Если совсем ничего — placeholder → текст
+    """
     published: list[str] = []
     async with aiohttp.ClientSession() as session:
         for post in posts:
             article = _match_article(post, articles)
             title = article.get("title", "") if article else post[:50]
-            image: str | None = None
+            referer = article.get("link", "") if article else ""
+            image_bytes: bytes | None = None
             source = "none"
 
             if article:
-                rss_imgs = article.get("rss_images", [])
-                logger.info("[MEDIA] RSS-фото: %d", len(rss_imgs))
+                # Шаг 1: пробуем og:image из HTML + RSS как backup
+                html_url = await fetch_article_image_url(
+                    session, article["link"],
+                )
+                candidates: list[str] = []
+                if html_url:
+                    candidates.append(html_url)
+                if USE_RSS_MEDIA_FALLBACK:
+                    candidates.extend(article.get("rss_images", [])[:5])
 
-                image = await fetch_article_image(session, article["link"])
-                if image:
-                    source = "HTML"
+                logger.info(
+                    "[MEDIA] кандидатов фото: %d (HTML: %s, RSS: %d)",
+                    len(candidates),
+                    "да" if html_url else "нет",
+                    len(article.get("rss_images", [])),
+                )
 
-                if not image and USE_RSS_MEDIA_FALLBACK and rss_imgs:
-                    image = rss_imgs[0]
-                    source = "RSS"
-                    logger.info("[MEDIA] HTML не дал → RSS: %s", image[:100])
+                image_bytes = await _try_download_first(
+                    session, candidates, referer,
+                )
+                if image_bytes:
+                    source = "bytes"
             else:
                 logger.warning("[MEDIA] статья не сопоставлена")
 
             logger.info(
-                "[MEDIA] итог: source=%s, image=%s",
-                source, (image[:80] + "...") if image else "None",
+                "[MEDIA] итог: source=%s, bytes=%s",
+                source,
+                f"{len(image_bytes) // 1024} КБ" if image_bytes else "None",
             )
 
-            if await _send_single_post(bot, post, image, title):
+            if await _send_single_post(bot, post, image_bytes, title):
                 published.append(post)
                 await asyncio.sleep(POST_DELAY_SECONDS)
     return published
@@ -527,8 +582,6 @@ def extract_urls(posts: list[str]) -> set[str]:
             urls.add(m)
     return urls
 
-
-# ---------- Основной цикл ----------
 
 async def run_cycle() -> None:
     logger.info("=== Старт цикла ===")
