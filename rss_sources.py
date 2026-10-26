@@ -4,17 +4,11 @@
 """
 
 RSS_FEEDS = [
-    # Motor.ru — ведущее автомобильное издание
     "https://motor.ru/rss",
-    # Drive.ru — обзоры и тест-драйвы
     "https://www.drive.ru/rss",
-    # Kolesa.ru — автомобильный онлайн-журнал
     "https://www.kolesa.ru/rss",
-    # Auto.ru — новости и обзоры
     "https://auto.ru/mag/rss/",
-    # Автовзгляд
     "https://www.avtovzglyad.ru/rss/",
-    # АиФ Авто
     "https://aif.ru/rss/automobile.php",
 ]
 
@@ -29,7 +23,7 @@ CAR_BRANDS = [
     "lucid", "rivian", "fisker", "bugatti", "koenigsegg", "pagani", "lotus",
     "alpine", "maserati", "peugeot", "citroen", "renault", "dacia", "skoda",
     "seat", "cupra", "opel", "vauxhall", "fiat", "alfa romeo", "lancia",
-    "лада", "lada", "москвич", "газ", "уаз", "камаз",
+    "лада", "lada", "москвич", "газ", "уаз", "камаз", "yangwang",
 ]
 
 AUTO_KEYWORDS = [
@@ -48,24 +42,31 @@ AUTO_KEYWORDS = [
 ]
 
 STOP_WORDS = [
-    # ============ МОТОТЕХНИКА ============
+    # МОТОТЕХНИКА
     "motorcycle", "motorbike", "scooter", "bike", "atv", "quad",
     "мотоцикл", "мопед", "скутер", "квадроцикл", "снегоход",
-
-    # ============ ЗАПЧАСТИ / АКСЕССУАРЫ ============
+    # ЗАПЧАСТИ / АКСЕССУАРЫ
     "tire", "tires", "wheel", "wheels", "brake pad", "oil filter",
     "spark plug", "accessory",
     "шины", "колеса", "тормозные колодки", "масляный фильтр", "аксессуары",
-
-    # ============ СТРАХОВКИ / ЗАКОНЫ ============
+    # ЩЁТКИ / ДВОРНИКИ
+    "щетк", "щётк", "стеклоочистител", "дворник",
+    "wiper", "wipers", "windshield washer",
+    "омывател", "антифриз", "моторное масло", "тосол",
+    # СОВЕТЫ / ИНСТРУКЦИИ
+    "как выбрать", "как заменить", "как проверить", "как ухаживать",
+    "совет", "советы", "инструкция", "лайфхак", "how to", "tips", "advice",
+    # РЕЙТИНГИ
+    "топ-", "топ ", "top-", "top 10", "top 5",
+    "рейтинг", "rating", "лучших", "лучшие",
+    "худших", "худшие", "worse", "worst",
+    # СТРАХОВКИ / ЗАКОНЫ
     "insurance", "tariff", "tax", "fine", "toll", "driving license",
     "страховка", "тариф", "налог", "штраф", "платная дорога", "права",
-
-    # ============ ГОНОЧНЫЕ СЕРИИ ============
+    # ГОНКИ
     "f1 race result", "nascar race", "motogp race", "formula 1 race",
     "результаты гонки", "формула-1 гонка",
-
-    # ============ НЕ АВТО ============
+    # НЕ АВТО
     "smartphone", "смартфон", "планшет", "tablet", "наушники",
     "бытовая техника", "холодильник", "стиральная машина",
 ]
