@@ -30,10 +30,17 @@ POST_DELAY_SECONDS = 3
 HISTORY_RETENTION_DAYS = 30
 
 # --- Медиа ---
-# Приоритет: og:image из HTML.
-# Если HTML не дал фото (сайт блокирует GitHub Actions) — взять из RSS.
-# Установите False, если хотите строго только HTML (некоторые посты будут без фото).
+# Порядок: HTML (og:image) → RSS (media:content/enclosure/img) → placeholder
 USE_RSS_MEDIA_FALLBACK = True
+# Если ничего не нашли — генерируем placeholder, чтобы пост был с картинкой.
+# False = посты без фото, если источник не отдал.
+USE_PLACEHOLDER_IF_NO_PHOTO = True
+
+# Шаблон placeholder: {text} заменится на бренд или первые слова из заголовка.
+# placehold.co бесплатный, работает из любой точки, без ключа.
+PLACEHOLDER_IMAGE_TEMPLATE = (
+    "https://placehold.co/1200x630/1e293b/ffffff/png?text={text}"
+)
 
 # --- Уведомления об ошибках ---
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0") or 0)
