@@ -35,11 +35,11 @@ RULE 1. OUTPUT LANGUAGE: RUSSIAN ONLY.
 - Everything (headline, body) MUST be in Russian.
 - If input news is English — translate it.
 - Brand/model names (Tesla Model 3, BMW iX, Toyota Camry,
-  Porsche 911, Lucid Air) stay in Latin script.
+  Porsche 911, Lucid Air, Yangwang U8) stay in Latin script.
 
 RULE 2. HEADLINE MUST BE IN RUSSIAN.
 - The <b>...</b> headline MUST be translated to Russian.
-- DO NOT copy the English source title verbatim into the headline.
+- DO NOT copy the source title verbatim.
 - A post with an English headline will be automatically REJECTED.
 
 ═══════════════════════════════════════════════════════════
@@ -63,25 +63,31 @@ YOUR TASK
 ═══════════════════════════════════════════════════════════
 From the news list below, produce 3 to 5 separate Telegram posts.
 
-TOPIC — CARS ONLY:
+TOPIC — CARS ONLY. Only NEWS about vehicles:
 - New car models, launches, announcements
 - Concept cars and prototypes
 - Electric vehicles and hybrids
 - Leaks, spy shots, renders of upcoming cars
-- Reviews, comparisons, test drives
+- Reviews, comparisons, test drives of NEW models
 - Specs: engine, power, torque, range, battery, price
+- Car factory openings, major industry investments
 
-IGNORE (do not create posts for):
+IGNORE (DO NOT create posts for):
+- Advice, how-to, tips, lifehacks
+  (e.g. "how to choose wipers", "autumn tips", "how to check oil")
+- Top-10 / top-5 / ratings / worst / best lists
+  (e.g. "7 cars with worst fuel economy", "top 10 reliable cars")
 - Motorcycles, scooters, ATVs
-- Parts, tires, accessories
-- Tariffs, insurance, taxes, traffic laws
-- F1, NASCAR, MotoGP racing series
+- Parts, tires, wipers, windshield washer, oil, accessories
+- Tariffs, insurance, taxes, traffic laws, fines
+- F1, NASCAR, MotoGP race results
 - Water and air transport
 - Agricultural machinery
 - Smartphones or consumer electronics
 
 If fewer than 3 items match the topic, produce as many as you can.
-NEVER pad the list with off-topic news.
+NEVER pad the list with off-topic news. It is BETTER to produce
+2 posts about real car news than 5 posts where 3 are advice/listicles.
 
 ═══════════════════════════════════════════════════════════
 FORMAT REQUIREMENTS (per post)
@@ -94,9 +100,7 @@ FORMAT REQUIREMENTS (per post)
 4. Last line: <a href="URL">Источник</a>
    - Label MUST be exactly "Источник" (Russian word)
    - Do NOT use bare URLs
-   - Do NOT use other labels ("Source", "Ссылка", "Читать")
 5. Total post: up to 600 chars
-6. Tone: neutral, informative, no clickbait
 
 ═══════════════════════════════════════════════════════════
 OUTPUT FORMAT
@@ -125,20 +129,29 @@ Do NOT output JSON, markdown, numbering, or explanations.
 <a href="https://example.com/article-2">Источник</a>
 
 ═══════════════════════════════════════════════════════════
-❌ FORBIDDEN
+❌ FORBIDDEN TOPICS (reject these even if they mention cars)
+═══════════════════════════════════════════════════════════
+- "Как выбрать..." / "How to choose..."
+- "Советы..." / "Совет..." / "Tips..."
+- "Топ-10..." / "Top-10..." / "Рейтинг..." / "Rating..."
+- "Лучшие..." / "Худшие..." / "Best..." / "Worst..."
+- Щётки стеклоочистителя, дворники, шины, масло, антифриз
+- Инструкции по ремонту и обслуживанию
+
+═══════════════════════════════════════════════════════════
+❌ FORBIDDEN FORMAT
 ═══════════════════════════════════════════════════════════
 - English headline or body
-- Copying the English source title into <b>...</b>
+- Copying the source title into <b>...</b>
 - **markdown bold** instead of <b>...</b>
 - Bare URLs without <a href="...">Источник</a> wrapper
 - Any label other than "Источник" for the link
 - Inventing URLs — use ONLY URLs from the input
 
-Remember: HEADLINE IN RUSSIAN, link = <a href="URL">Источник</a>.
+Remember: HEADLINE IN RUSSIAN, link = <a href="URL">Источник</a>,
+ONLY REAL CAR NEWS (not advice, not listicles).
 """
 
-
-# ---------- Утилиты очистки ----------
 
 def _clean_unicode(text: str) -> str:
     if not text:
@@ -153,10 +166,6 @@ def _clean_unicode(text: str) -> str:
 
 
 def _normalize_source_link(text: str) -> str:
-    """
-    Приводит ссылку в конце поста к <a href="URL">Источник</a>.
-    Поддерживает и одинарные, и двойные кавычки, а также href=URL без кавычек.
-    """
     text = re.sub(
         r'<a\s+href\s*=\s*["\']?([^"\'\s>]+)["\']?[^>]*>[^<]*</a>',
         r'<a href="\1">Источник</a>',
@@ -168,9 +177,11 @@ def _normalize_source_link(text: str) -> str:
         if matches:
             last = matches[-1]
             url = last.group(0).rstrip(".,;:)")
-            before = text[:last.start()]
-            after = text[last.end():]
-            text = before + f'<a href="{url}">Источник</a>' + after
+            text = (
+                text[:last.start()]
+                + f'<a href="{url}">Источник</a>'
+                + text[last.end():]
+            )
     return text
 
 
@@ -204,10 +215,6 @@ def _cyrillic_ratio(text: str) -> float:
 
 
 def _headline_is_russian(text: str) -> tuple[bool, str, float]:
-    """
-    Проверяет, что заголовок в <b>...</b> на русском.
-    Возвращает (ok, headline_text, cyrillic_ratio).
-    """
     m = re.search(r'<b>(.+?)</b>', text, re.DOTALL)
     if not m:
         return False, "", 0.0
@@ -223,7 +230,6 @@ def _is_valid_post(text: str, max_len: int = 600) -> bool:
     if not stripped or not _is_emoji(stripped[0]):
         return False
 
-    # Заголовок в <b>...</b> должен быть на русском
     headline_ok, headline, ratio = _headline_is_russian(stripped)
     if not headline_ok:
         logger.warning(
@@ -274,8 +280,6 @@ def _parse_posts(raw: str) -> list[str]:
             )
     return posts
 
-
-# ---------- Запрос к одной модели ----------
 
 async def _try_model(
     model: str,
@@ -328,8 +332,6 @@ async def _try_model(
     logger.info("[LLM] %s: OK, %d символов", model, len(content))
     return content
 
-
-# ---------- Публичная функция ----------
 
 async def summarize_news(articles: list[dict]) -> list[str]:
     if not articles:
