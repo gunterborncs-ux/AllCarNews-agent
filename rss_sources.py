@@ -1,15 +1,22 @@
 """
 Источники RSS и правила фильтрации для автомобилей.
-Только российские сайты.
+Только крупные мировые издания с надёжными RSS-лентами.
 """
 
 RSS_FEEDS = [
-    "https://motor.ru/rss",
+    # --- Англоязычные ---
+    "https://insideevs.com/rss/category/artificial-intelligence/",
+    "https://www.carscoops.com/feed/",
+    "https://www.motor1.com/rss/",
+    "https://jalopnik.com/rss",
+    "https://www.caranddriver.com/rss/all.xml",
+    "https://www.autoblog.com/rss.xml",
+    "https://electrek.co/feed/",
+    # --- Русскоязычные ---
+    "https://motor.ru/exports/rss",
     "https://www.drive.ru/rss",
+    "https://www.autonews.ru/rss",
     "https://www.kolesa.ru/rss",
-    "https://auto.ru/mag/rss/",
-    "https://www.avtovzglyad.ru/rss/",
-    "https://aif.ru/rss/automobile.php",
 ]
 
 CAR_BRANDS = [
