@@ -1,5 +1,5 @@
 """
-Smartphones News Agent.
+Auto News Agent.
 Медиа (фото/видео) берётся ТОЛЬКО из RSS.
 Умная дедупликация фото по нормализованному URL.
 """
@@ -13,7 +13,6 @@ import aiohttp
 import feedparser
 from aiogram import Bot
 from aiogram.types import InputMediaPhoto
-from bs4 import BeautifulSoup
 
 from config import (
     BOT_TOKEN, CHANNEL_ID, ADMIN_CHAT_ID,
@@ -22,7 +21,8 @@ from config import (
     POST_DELAY_SECONDS, HISTORY_RETENTION_DAYS,
 )
 from dedup import deduplicate
-from rss_sources import RSS_FEEDS, BRAND_MARKERS, PHONE_KEYWORDS, STOP_WORDS
+# ВАЖНО: Здесь импортируются переменные для авто
+from rss_sources import RSS_FEEDS, CAR_BRANDS, AUTO_KEYWORDS, STOP_WORDS
 from storage import (
     load_history, save_history, filter_unpublished, cleanup_old, add_urls,
 )
@@ -244,9 +244,10 @@ def is_relevant(article: dict) -> bool:
     text = (article.get("title", "") + " " + article.get("summary", "")).lower()
     if any(stop in text for stop in STOP_WORDS):
         return False
-    if any(brand in text for brand in BRAND_MARKERS):
+    # ВАЖНО: Используются CAR_BRANDS и AUTO_KEYWORDS
+    if any(brand in text for brand in CAR_BRANDS):
         return True
-    if any(kw in text for kw in PHONE_KEYWORDS):
+    if any(kw in text for kw in AUTO_KEYWORDS):
         return True
     return False
 
@@ -301,7 +302,8 @@ def _match_article(post: str, articles: list[dict]) -> dict | None:
 async def notify_admin(bot: Bot, reason: str, details: str = "") -> None:
     if not ADMIN_CHAT_ID:
         return
-    text = f"⚠️ <b>Smartphones Hub</b>\n\n{reason}"
+    # ВАЖНО: Заголовок Auto News Agent
+    text = f"⚠️ <b>Auto News Agent</b>\n\n{reason}"
     if details:
         text += f"\n\n<code>{_html_escape(details[:800])}</code>"
     try:
