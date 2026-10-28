@@ -1,13 +1,13 @@
 """
-Auto News Agent.
+Smartphones News Agent.
 Медиа (фото/видео) берётся ТОЛЬКО из RSS.
-Никаких HTML-запросов, impit и плейсхолдеров.
+Умная дедупликация фото по нормализованному URL.
 """
 import asyncio
 import logging
 import re
 import traceback
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import aiohttp
 import feedparser
@@ -22,7 +22,7 @@ from config import (
     POST_DELAY_SECONDS, HISTORY_RETENTION_DAYS,
 )
 from dedup import deduplicate
-from rss_sources import RSS_FEEDS, CAR_BRANDS, AUTO_KEYWORDS, STOP_WORDS
+from rss_sources import RSS_FEEDS, BRAND_MARKERS, PHONE_KEYWORDS, STOP_WORDS
 from storage import (
     load_history, save_history, filter_unpublished, cleanup_old, add_urls,
 )
@@ -77,6 +77,22 @@ def _is_valid_image_url(url: str) -> bool:
     return True
 
 
+def _normalize_image_url(url: str) -> str:
+    """
+    Нормализует URL картинки для дедупликации:
+    убирает суффиксы размеров (например, -800x600, -150x150)
+    и query-параметры (например, ?resize=800).
+    """
+    try:
+        p = urlparse(url)
+        # Убираем -800x600, _150x150 перед расширением
+        path = re.sub(r'[-_]\d+x\d+(?=\.\w+$)', '', p.path)
+        # Оставляем только схему, домен и путь (без query)
+        return urlunparse((p.scheme, p.netloc, path, '', '', ''))
+    except Exception:
+        return url
+
+
 def _normalize_url_for_match(url: str) -> str:
     if not url:
         return ""
@@ -109,8 +125,12 @@ def _url_fingerprint(url: str) -> str:
 # ---------- Извлечение медиа из RSS ----------
 
 def _extract_rss_media(entry: dict, base_url: str) -> tuple[list[str], str | None]:
+    """
+    Собирает уникальные фото и видео из полей RSS.
+    Дедупликация идет по нормализованному имени файла.
+    """
     images: list[str] = []
-    seen: set[str] = set()
+    seen_norm: set[str] = set()
     video: str | None = None
 
     def _add_image(url: str) -> None:
@@ -123,11 +143,13 @@ def _extract_rss_media(entry: dict, base_url: str) -> tuple[list[str], str | Non
             url = "https:" + url
         elif not (url.startswith("http://") or url.startswith("https://")):
             url = urljoin(base_url, url)
-        if url in seen:
-            return
         if not _is_valid_image_url(url):
             return
-        seen.add(url)
+        
+        norm = _normalize_image_url(url)
+        if norm in seen_norm:
+            return
+        seen_norm.add(norm)
         images.append(url)
 
     def _set_video(url: str) -> None:
@@ -222,9 +244,9 @@ def is_relevant(article: dict) -> bool:
     text = (article.get("title", "") + " " + article.get("summary", "")).lower()
     if any(stop in text for stop in STOP_WORDS):
         return False
-    if any(brand in text for brand in CAR_BRANDS):
+    if any(brand in text for brand in BRAND_MARKERS):
         return True
-    if any(kw in text for kw in AUTO_KEYWORDS):
+    if any(kw in text for kw in PHONE_KEYWORDS):
         return True
     return False
 
@@ -279,7 +301,7 @@ def _match_article(post: str, articles: list[dict]) -> dict | None:
 async def notify_admin(bot: Bot, reason: str, details: str = "") -> None:
     if not ADMIN_CHAT_ID:
         return
-    text = f"⚠️ <b>Auto News Agent</b>\n\n{reason}"
+    text = f"⚠️ <b>Smartphones Hub</b>\n\n{reason}"
     if details:
         text += f"\n\n<code>{_html_escape(details[:800])}</code>"
     try:
@@ -292,7 +314,7 @@ async def notify_admin(bot: Bot, reason: str, details: str = "") -> None:
         logger.error("Не удалось отправить уведомление: %s", exc)
 
 
-# ---------- Публикация (только RSS-медиа) ----------
+# ---------- Публикация ----------
 
 async def _send_single_post(
     bot: Bot, post: str, images: list[str], video: str | None,
