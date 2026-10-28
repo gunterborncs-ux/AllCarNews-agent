@@ -1,18 +1,17 @@
 """
 Auto News Agent.
 Медиа (фото/видео) берётся ТОЛЬКО из RSS.
-Умная дедупликация фото по нормализованному URL.
+Жесткая дедупликация фото и ограничение до 1 главного фото.
 """
 import asyncio
 import logging
 import re
 import traceback
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import urljoin, urlparse
 
 import aiohttp
 import feedparser
 from aiogram import Bot
-from aiogram.types import InputMediaPhoto
 
 from config import (
     BOT_TOKEN, CHANNEL_ID, ADMIN_CHAT_ID,
@@ -21,7 +20,6 @@ from config import (
     POST_DELAY_SECONDS, HISTORY_RETENTION_DAYS,
 )
 from dedup import deduplicate
-# ВАЖНО: Здесь импортируются переменные для авто
 from rss_sources import RSS_FEEDS, CAR_BRANDS, AUTO_KEYWORDS, STOP_WORDS
 from storage import (
     load_history, save_history, filter_unpublished, cleanup_old, add_urls,
@@ -55,7 +53,9 @@ _JUNK_MARKERS = (
     "favicon", "/icon/", "avatar", "logo.svg", "/emoji/",
 )
 
-_MAX_PHOTOS_PER_POST = 10
+# ОГРАНИЧЕНИЕ: только 1 фото на пост. 
+# Это гарантирует отсутствие дублей и делает пост аккуратным.
+_MAX_PHOTOS_PER_POST = 1
 
 
 def _html_escape(s: str) -> str:
@@ -79,18 +79,33 @@ def _is_valid_image_url(url: str) -> bool:
 
 def _normalize_image_url(url: str) -> str:
     """
-    Нормализует URL картинки для дедупликации:
-    убирает суффиксы размеров (например, -800x600, -150x150)
-    и query-параметры (например, ?resize=800).
+    Максимально жесткая нормализация URL для отсечения любых дублей.
     """
     try:
         p = urlparse(url)
-        # Убираем -800x600, _150x150 перед расширением
-        path = re.sub(r'[-_]\d+x\d+(?=\.\w+$)', '', p.path)
-        # Оставляем только схему, домен и путь (без query)
-        return urlunparse((p.scheme, p.netloc, path, '', '', ''))
+        path = p.path
+
+        # 1. Убираем размеры в названии (например, -800x600, _150x150)
+        path = re.sub(r'[-_]\d+x\d+', '', path)
+        
+        # 2. Убираем слова-модификаторы (thumb, scaled, medium и т.д.)
+        path = re.sub(
+            r'[-_/](thumb|thumbnail|scaled|medium|large|small|preview|resized|big|mini)', 
+            '', 
+            path, 
+            flags=re.IGNORECASE
+        )
+        
+        # 3. Убираем расширение файла (jpg, png), чтобы img.jpg и img.png считались дублями
+        path = re.sub(r'\.\w+$', '', path)
+        
+        # 4. Очищаем домен от www
+        netloc = p.netloc.lower().replace('www.', '')
+        
+        # Возвращаем "отпечаток" без query-параметров
+        return f"{netloc}{path.lower()}"
     except Exception:
-        return url
+        return url.lower()
 
 
 def _normalize_url_for_match(url: str) -> str:
@@ -127,7 +142,7 @@ def _url_fingerprint(url: str) -> str:
 def _extract_rss_media(entry: dict, base_url: str) -> tuple[list[str], str | None]:
     """
     Собирает уникальные фото и видео из полей RSS.
-    Дедупликация идет по нормализованному имени файла.
+    Благодаря _normalize_image_url дубликаты разных размеров отсекаются.
     """
     images: list[str] = []
     seen_norm: set[str] = set()
@@ -244,7 +259,6 @@ def is_relevant(article: dict) -> bool:
     text = (article.get("title", "") + " " + article.get("summary", "")).lower()
     if any(stop in text for stop in STOP_WORDS):
         return False
-    # ВАЖНО: Используются CAR_BRANDS и AUTO_KEYWORDS
     if any(brand in text for brand in CAR_BRANDS):
         return True
     if any(kw in text for kw in AUTO_KEYWORDS):
@@ -302,7 +316,6 @@ def _match_article(post: str, articles: list[dict]) -> dict | None:
 async def notify_admin(bot: Bot, reason: str, details: str = "") -> None:
     if not ADMIN_CHAT_ID:
         return
-    # ВАЖНО: Заголовок Auto News Agent
     text = f"⚠️ <b>Auto News Agent</b>\n\n{reason}"
     if details:
         text += f"\n\n<code>{_html_escape(details[:800])}</code>"
@@ -321,6 +334,7 @@ async def notify_admin(bot: Bot, reason: str, details: str = "") -> None:
 async def _send_single_post(
     bot: Bot, post: str, images: list[str], video: str | None,
 ) -> bool:
+    # 1. Видео в приоритете
     if video:
         try:
             await bot.send_video(
@@ -331,33 +345,18 @@ async def _send_single_post(
         except Exception as exc:
             logger.warning("[SEND] send_video упал: %s | URL: %s", exc, video[:120])
 
-    photos = images[:_MAX_PHOTOS_PER_POST]
-    if len(photos) >= 2:
-        try:
-            media = [
-                InputMediaPhoto(
-                    media=url,
-                    caption=post if i == 0 else None,
-                    parse_mode="HTML" if i == 0 else None,
-                )
-                for i, url in enumerate(photos)
-            ]
-            await bot.send_media_group(chat_id=CHANNEL_ID, media=media)
-            logger.info("[SEND] альбом (%d фото): %s...", len(photos), post[:60])
-            return True
-        except Exception as exc:
-            logger.warning("[SEND] альбом упал: %s", exc)
-
-    if photos:
+    # 2. Одно фото (так как мы ограничили _MAX_PHOTOS_PER_POST = 1)
+    if images:
         try:
             await bot.send_photo(
-                chat_id=CHANNEL_ID, photo=photos[0], caption=post, parse_mode="HTML",
+                chat_id=CHANNEL_ID, photo=images[0], caption=post, parse_mode="HTML",
             )
             logger.info("[SEND] фото OK: %s...", post[:60])
             return True
         except Exception as exc:
-            logger.warning("[SEND] send_photo упал: %s | URL: %s", exc, photos[0][:120])
+            logger.warning("[SEND] send_photo упал: %s | URL: %s", exc, images[0][:120])
 
+    # 3. Текст, если медиа нет
     try:
         await bot.send_message(
             chat_id=CHANNEL_ID, text=post,
